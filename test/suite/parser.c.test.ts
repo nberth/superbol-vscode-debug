@@ -169,4 +169,23 @@ suite("C code parse", () => {
 					 parsed.findGlobalByCobol('foo', nativePath.join(cwd, 'globals2.c.h')));
 		assert.ok(parsed.findGlobalByCobol('BAR-2', nativePath.join(cwd, 'globals.c.h')));
 	});
+	test("GnuCOBOL 3.3 PERFORM statements", () => {
+		const c = nativePath.resolve(cwd, 'performs.c');
+		const cobol = nativePath.resolve(cwd, 'performs.cbl');
+		const parsed = new SourceMap(cwd, [cobol]);
+
+		// The code of PERFORM statements starts with a comment, on which gdb
+		// never stops: they map to the first line with code (`frame_ptr++`).
+		assert.equal(123, parsed.getLineC(cobol, 10).lineC);
+		assert.equal(10, parsed.getLineCobol(c, 123).lineCobol);
+		// `PERFORM ... TIMES` maps to its loop header.
+		assert.equal(136, parsed.getLineC(cobol, 11).lineC);
+		// The last statement of the procedure division keeps its own line,
+		// despite the `#line` directives that follow in the initialization
+		// code.
+		assert.equal(255, parsed.getLineC(cobol, 23).lineC);
+		assert.equal(23, parsed.getLineCobol(c, 255).lineCobol);
+
+		assert.equal('3.3-dev.0', parsed.getVersion());
+	});
 });
