@@ -101,6 +101,9 @@ export class GDBDebugSession extends DebugSession {
     protected attached: boolean;
     protected crashed: boolean;
     protected debugReady: boolean;
+    // Breakpoint updates being processed: each update clears breakpoints before
+    // setting the requested ones, so concurrent updates must not interleave.
+    private breakpointUpdates: Promise<void> = Promise.resolve();
     protected miDebugger: MI2;
     coverageStatus: CoverageStatus;
     private showCoverage: boolean = true;
@@ -356,34 +359,35 @@ export class GDBDebugSession extends DebugSession {
     }
 
     protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
-        const cb = () => {
-            this.debugReady = true;
-            this.miDebugger.clearBreakPoints().then(() => {
+        const update = async () => {
+            try {
+                await this.miDebugger.clearBreakPoints();
                 const path = args.source.path;
-                const all = args.breakpoints.map(brk => {
+                const brkpoints = await Promise.all(args.breakpoints.map(brk => {
                     return this.miDebugger.addBreakPoint({
                         file: path,
                         line: brk.line,
                         condition: brk.condition,
                         countCondition: brk.hitCondition
                     });
+                }));
+                const finalBrks: DebugAdapter.Breakpoint[] = [];
+                brkpoints.forEach(brkp => {
+                    if (brkp[0])
+                        finalBrks.push(new DebugAdapter.Breakpoint(true, brkp[1].line));
                 });
-                Promise.all(all).then(brkpoints => {
-                    const finalBrks: DebugAdapter.Breakpoint[] = [];
-                    brkpoints.forEach(brkp => {
-                        if (brkp[0])
-                            finalBrks.push(new DebugAdapter.Breakpoint(true, brkp[1].line));
-                    });
-                    response.body = {
-                        breakpoints: finalBrks
-                    };
-                    this.sendResponse(response);
-                }, (msg: Error) => {
-                    this.sendErrorResponse(response, 9, msg.toString());
-                });
-            }, (msg: Error) => {
-                this.sendErrorResponse(response, 9, msg.toString());
-            });
+                response.body = {
+                    breakpoints: finalBrks
+                };
+                this.sendResponse(response);
+            } catch (msg) {
+                this.sendErrorResponse(response, 9, String(msg));
+            }
+        };
+        const cb = () => {
+            this.debugReady = true;
+            // Process updates in the order they are received.
+            this.breakpointUpdates = this.breakpointUpdates.then(update);
         };
         if (this.debugReady)
             cb();
