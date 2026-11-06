@@ -101,8 +101,9 @@ export class GDBDebugSession extends DebugSession {
     protected attached: boolean;
     protected crashed: boolean;
     protected debugReady: boolean;
-    // Breakpoint updates being processed: each update clears breakpoints before
-    // setting the requested ones, so concurrent updates must not interleave.
+    // Breakpoint updates being processed in the current session: each update
+    // clears breakpoints before setting the requested ones, so concurrent
+    // updates must not interleave.
     private breakpointUpdates: Promise<void> = Promise.resolve();
     protected miDebugger: MI2;
     coverageStatus: CoverageStatus;
@@ -182,6 +183,8 @@ export class GDBDebugSession extends DebugSession {
         this.needContinue = false;
         this.crashed = false;
         this.debugReady = false;
+        // An update of a previous session may never complete (if its gdb is gone).
+        this.breakpointUpdates = Promise.resolve();
         this.miDebugger.load(cwd, args.target, args.arguments, args.group, args.gdbtty).then(
         /*onfulfilled:*/ () => {
             setTimeout(() => {
@@ -236,6 +239,8 @@ export class GDBDebugSession extends DebugSession {
         this.needContinue = true;
         this.crashed = false;
         this.debugReady = false;
+        // An update of a previous session may never complete (if its gdb is gone).
+        this.breakpointUpdates = Promise.resolve();
         // Run in the target executables' directory, unless specificed.
         let cwd = args.cwd ?? path.dirname (args.target);
         this.miDebugger.attach(cwd, args.target, args.group).then(() => {
@@ -359,12 +364,12 @@ export class GDBDebugSession extends DebugSession {
     }
 
     protected setBreakPointsRequest(response: DebugProtocol.SetBreakpointsResponse, args: DebugProtocol.SetBreakpointsArguments): void {
-        const update = async () => {
+        const update = async (miDebugger: MI2) => {
             try {
-                await this.miDebugger.clearBreakPoints();
+                await miDebugger.clearBreakPoints();
                 const path = args.source.path;
                 const brkpoints = await Promise.all(args.breakpoints.map(brk => {
-                    return this.miDebugger.addBreakPoint({
+                    return miDebugger.addBreakPoint({
                         file: path,
                         line: brk.line,
                         condition: brk.condition,
@@ -387,7 +392,8 @@ export class GDBDebugSession extends DebugSession {
         const cb = () => {
             this.debugReady = true;
             // Process updates in the order they are received.
-            this.breakpointUpdates = this.breakpointUpdates.then(update);
+            const miDebugger = this.miDebugger;
+            this.breakpointUpdates = this.breakpointUpdates.then(() => update(miDebugger));
         };
         if (this.debugReady)
             cb();
